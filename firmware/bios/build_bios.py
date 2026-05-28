@@ -8,9 +8,9 @@ BIN_FILE = "xbios.rom"
 HEADER_FILE = "xbios_rom.h"
 ARRAY_NAME = "copico_xbios_bin"
 
-# Relative to this script: bios/ -> master-hat-firmware/ -> firmware/ -> repo/ -> copico/
+# Relative to this script: bios/ -> firmware/ -> repo/ -> copico/
 _COPICO_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../..")
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../..")
 )
 _LWASM_SIBLING = os.path.join(_COPICO_ROOT, "lwtools-4.21", "lwasm", "lwasm")
 
