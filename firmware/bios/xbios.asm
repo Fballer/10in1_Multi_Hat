@@ -12,6 +12,8 @@ VAR_DISK    EQU     $0102
 VAR_COMM    EQU     $0103
 VAR_RTC     EQU     $0104
 VAR_TMODE   EQU     $0105       * Toggle mode for PSTR_T ($40=normal,$00=inv)
+VAR_SAVE    EQU     $0106       * RP2350 save trigger (write SAVE_MAGIC)
+SAVE_MAGIC  EQU     $A5
 
 STATUS_BUF  EQU     $D800
 STATUS_FW   EQU     $D820
@@ -26,11 +28,16 @@ REG_COMM    EQU     $FF73
 REG_RTC     EQU     $FF74
 REG_TZ      EQU     $FF75
 REG_FLASH_CMD EQU   $FF76
+REG_SAVE_STATUS EQU $FF7E
 REG_BOOT    EQU     $FF7F
 FLASH_CMD_SCAN    EQU 1
 FLASH_CMD_CLEAR   EQU 2
 FLASH_CMD_FACTORY EQU 3
 FLASH_CMD_INTERNAL EQU 9
+SAVE_STATUS_IDLE    EQU 0
+SAVE_STATUS_PENDING EQU 1
+SAVE_STATUS_OK      EQU 2
+SAVE_STATUS_ERR     EQU 3
 RESULT_BUSY       EQU 1
 RESULT_OK         EQU 2
 RESULT_ERR        EQU 3
@@ -41,11 +48,19 @@ RESULT_ERR        EQU 3
 
 START:
             LDS     #$03FF
-            CLR     VAR_AUDIO
-            CLR     VAR_VIDEO
-            CLR     VAR_DISK
-            CLR     VAR_COMM
-            CLR     VAR_RTC
+            * Preload VAR_* from RP2350 saved-config registers. The 6809
+            * stores them itself so $0100-$0104 init happens in the same bus
+            * context as later toggling (consistent SAM page).
+            LDA     REG_AUDIO
+            STA     VAR_AUDIO
+            LDA     REG_VIDEO
+            STA     VAR_VIDEO
+            LDA     REG_DISK
+            STA     VAR_DISK
+            LDA     REG_COMM
+            STA     VAR_COMM
+            LDA     REG_RTC
+            STA     VAR_RTC
 
             JSR     CHECK_SETUP
 
@@ -164,11 +179,12 @@ DO_BOOT:
             STA     REG_COMM
             LDA     VAR_RTC
             STA     REG_RTC
-            LDA     #$55
-            STA     REG_BOOT
             LBSR    DRAW_SAVING
+            LBSR    WAIT_ANY_KEY
+            LDA     #SAVE_MAGIC
+            STA     VAR_SAVE
             LBSR    DELAY_1S
-            JMP     [$FFFE]
+            LBRA    WAIT_FOR_REBOOT
 
 *******************************************************************************
 * OPTIONS_LOOP - Submenu State
@@ -439,8 +455,11 @@ LTZ3_S6:    LDA     #17
 
 TZ_SAVE_EXIT:
             LBSR    DRAW_SAVING
+            LBSR    WAIT_ANY_KEY
+            LDA     #SAVE_MAGIC
+            STA     VAR_SAVE
             LBSR    DELAY_1S
-            LBRA    OPTIONS_LOOP
+            LBRA    WAIT_FOR_REBOOT
 
 *******************************************************************************
 * CHECK_SETUP - SDC-DOS missing alert ($D880 bit 0)
@@ -465,6 +484,18 @@ FW_WAIT:    LDA     STATUS_RESULT
             CMPA    #RESULT_BUSY
             BEQ     FW_WAIT
             RTS
+
+*******************************************************************************
+* WAIT_FOR_SAVE - block until RP2350 flash save finishes
+*******************************************************************************
+WAIT_FOR_SAVE:
+WS_WAIT:    LDA     REG_SAVE_STATUS
+            CMPA    #SAVE_STATUS_OK
+            BEQ     WS_DONE
+            CMPA    #SAVE_STATUS_ERR
+            BEQ     WS_DONE
+            BRA     WS_WAIT
+WS_DONE:    RTS
 
 *******************************************************************************
 * DRAW_MAIN
@@ -1234,6 +1265,84 @@ DTZ3_CLR:   STA     ,X+
             RTS
 
 *******************************************************************************
+* Value-string helpers for save summary (X -> string, A clobbered)
+*******************************************************************************
+PVAL_AUDIO:
+            LDA     VAR_AUDIO
+            CMPA    #0
+            BNE     PVA_1
+            LDX     #STR_VAL_SPEECH
+            RTS
+PVA_1:      CMPA    #1
+            BNE     PVA_2
+            LDX     #STR_VAL_ORCH90
+            RTS
+PVA_2:      LDX     #STR_VAL_OFF
+            RTS
+
+PVAL_VIDEO:
+            LDA     VAR_VIDEO
+            CMPA    #0
+            BNE     PVV_1
+            LDX     #STR_VAL_V9958
+            RTS
+PVV_1:      CMPA    #1
+            BNE     PVV_2
+            LDX     #STR_VAL_SUPERSPR
+            RTS
+PVV_2:      LDX     #STR_VAL_OFF
+            RTS
+
+PVAL_COMM:
+            LDA     VAR_COMM
+            CMPA    #0
+            BNE     PVC_1
+            LDX     #STR_VAL_WIFI
+            RTS
+PVC_1:      CMPA    #1
+            BNE     PVC_2
+            LDX     #STR_VAL_RS232
+            RTS
+PVC_2:      CMPA    #2
+            BNE     PVC_3
+            LDX     #STR_VAL_FUJINET
+            RTS
+PVC_3:      LDX     #STR_VAL_OFF
+            RTS
+
+PVAL_DISK:
+            LDA     VAR_DISK
+            CMPA    #0
+            BNE     PVD_1
+            LDX     #STR_VAL_SDC
+            RTS
+PVD_1:      CMPA    #1
+            BNE     PVD_2
+            LDX     #STR_VAL_FUJINET_D
+            RTS
+PVD_2:      CMPA    #2
+            BNE     PVD_3
+            LDX     #STR_VAL_OFF
+            RTS
+PVD_3:      LDX     #STR_VAL_INTERNAL
+            RTS
+
+PVAL_RTC:
+            LDA     VAR_RTC
+            BNE     PVR_1
+            LDX     #STR_VAL_RTCOFF
+            RTS
+PVR_1:      LDX     #STR_VAL_RTCON
+            RTS
+
+PVAL_TZ:
+            LDA     REG_TZ
+            ASLA
+            LDX     #TZ_NAME_TAB
+            LDX     A,X
+            RTS
+
+*******************************************************************************
 * DRAW_SAVING
 *******************************************************************************
 DRAW_SAVING:
@@ -1244,9 +1353,69 @@ DSAV_CLR:   STA     ,X+
             BNE     DSAV_CLR
 
             LDX     #STR_SAVING
-            LDU     #$04C0
+            LDU     #$0400
             LBSR    PSTR_D
+
+            LDX     #STR_SAVE_SUB
+            LDU     #$0420
+            LBSR    PSTR_D
+
+            LDU     #$0440
+            LDX     #STR_SAVE_LA
+            LBSR    PSTR_N
+            LBSR    PVAL_AUDIO
+            LBSR    PSTR_N
+
+            LDU     #$0460
+            LDX     #STR_SAVE_LV
+            LBSR    PSTR_N
+            LBSR    PVAL_VIDEO
+            LBSR    PSTR_N
+
+            LDU     #$0480
+            LDX     #STR_SAVE_LC
+            LBSR    PSTR_N
+            LBSR    PVAL_COMM
+            LBSR    PSTR_N
+
+            LDU     #$04A0
+            LDX     #STR_SAVE_LD
+            LBSR    PSTR_N
+            LBSR    PVAL_DISK
+            LBSR    PSTR_N
+
+            LDU     #$04C0
+            LDX     #STR_SAVE_LR
+            LBSR    PSTR_N
+            LBSR    PVAL_RTC
+            LBSR    PSTR_N
+
+            LDU     #$04E0
+            LDX     #STR_SAVE_LT
+            LBSR    PSTR_N
+            LBSR    PVAL_TZ
+            LBSR    PSTR_N
+
+            LDU     #$05C0
+            LDX     #STR_SAVE_CONT
+            LBSR    PSTR_T
+
             RTS
+
+*******************************************************************************
+* WAIT_ANY_KEY
+*******************************************************************************
+WAIT_ANY_KEY:
+WAK_LOOP:   JSR     [POLCAT]
+            TSTA
+            BEQ     WAK_LOOP
+            RTS
+
+*******************************************************************************
+* WAIT_FOR_REBOOT - RP2350 pulses RESET after save commit
+*******************************************************************************
+WAIT_FOR_REBOOT:
+            BRA     WAIT_FOR_REBOOT
 
 *******************************************************************************
 * DELAY_1S
@@ -1260,7 +1429,6 @@ D1S_LOOP:   LEAX    -1,X
             BNE     D1S_OUTER
             RTS
 
-*******************************************************************************
 * DRAW_STATUS - Row 4 dynamic (normal text)
 *******************************************************************************
 DRAW_STATUS:
@@ -1679,7 +1847,7 @@ STR_WIFI_J  FCC     "   "
 * --- Setup Required alert ---
 STR_SETUP_T FCC     "  *** SETUP REQUIRED ***        "
             FCB     0
-STR_SETUP_H FCC     "  -------- ACTION NEEDED ---------"
+STR_SETUP_H FCC     "-------- ACTION NEEDED --------"
             FCB     0
 STR_SETUP_1 FCC     "  SDC-DOS ROM IS NOT INSTALLED. "
             FCB     0
@@ -2000,5 +2168,96 @@ STR_TZ_PROMPT FCC   "         SELECT 1-6 OR         "
             FCB     0
 STR_SAVING  FCC     "  *** SAVING CONFIGURATION ***  "
             FCB     0
+STR_SAVE_SUB FCC    "  SAVING THESE SETTINGS TO FLASH:"
+            FCB     0
+STR_SAVE_LA FCC     " AUDIO: "
+            FCB     0
+STR_SAVE_LV FCC     " VIDEO: "
+            FCB     0
+STR_SAVE_LC FCC     " COMM : "
+            FCB     0
+STR_SAVE_LD FCC     " DISK : "
+            FCB     0
+STR_SAVE_LR FCC     " RTC  : "
+            FCB     0
+STR_SAVE_LT FCC     " TZ   : "
+            FCB     0
+STR_SAVE_CONT FCC   "   PRESS ANY KEY TO CONTINUE    "
+            FCB     0
+
+TZ_NAME_TAB FDB     STR_TZN_1
+            FDB     STR_TZN_2
+            FDB     STR_TZN_3
+            FDB     STR_TZN_4
+            FDB     STR_TZN_5
+            FDB     STR_TZN_6
+            FDB     STR_TZN_7
+            FDB     STR_TZN_8
+            FDB     STR_TZN_9
+            FDB     STR_TZN_10
+            FDB     STR_TZN_11
+            FDB     STR_TZN_12
+            FDB     STR_TZN_13
+            FDB     STR_TZN_14
+            FDB     STR_TZN_15
+            FDB     STR_TZN_16
+            FDB     STR_TZN_17
+            FDB     STR_TZN_18
+
+STR_TZN_1   FCC     "NFLD"
+            FCB     0
+STR_TZN_2   FCC     "NST"
+            FCB     0
+STR_TZN_3   FCC     "EST"
+            FCB     0
+STR_TZN_4   FCC     "CST"
+            FCB     0
+STR_TZN_5   FCC     "MST"
+            FCB     0
+STR_TZN_6   FCC     "PST"
+            FCB     0
+STR_TZN_7   FCC     "AKST"
+            FCB     0
+STR_TZN_8   FCC     "HST"
+            FCB     0
+STR_TZN_9   FCC     "WET"
+            FCB     0
+STR_TZN_10  FCC     "CET"
+            FCB     0
+STR_TZN_11  FCC     "EET"
+            FCB     0
+STR_TZN_12  FCC     "MSK"
+            FCB     0
+STR_TZN_13  FCC     "IST"
+            FCB     0
+STR_TZN_14  FCC     "CHINA"
+            FCB     0
+STR_TZN_15  FCC     "JST"
+            FCB     0
+STR_TZN_16  FCC     "AEST"
+            FCB     0
+STR_TZN_17  FCC     "NZST"
+            FCB     0
+STR_TZN_18  FCC     "SST"
+            FCB     0
+
+TZ_STR_TAB  FDB     STR_TZ_1
+            FDB     STR_TZ_2
+            FDB     STR_TZ_3
+            FDB     STR_TZ_4
+            FDB     STR_TZ_5
+            FDB     STR_TZ_6
+            FDB     STR_TZ_7
+            FDB     STR_TZ_8
+            FDB     STR_TZ_9
+            FDB     STR_TZ_10
+            FDB     STR_TZ_11
+            FDB     STR_TZ_12
+            FDB     STR_TZ_13
+            FDB     STR_TZ_14
+            FDB     STR_TZ_15
+            FDB     STR_TZ_16
+            FDB     STR_TZ_17
+            FDB     STR_TZ_18
 
             END     START

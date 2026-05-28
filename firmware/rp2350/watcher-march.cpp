@@ -122,6 +122,7 @@ FORCE_INLINE uint ccfifo_pop_blocking() {
 
 #ifdef COPICO_XBIOS_ROM
 #include "xbios_rom.h"
+#include "copico_hat_config.h"
 static inline byte cart_rom_byte(uint abus) {
   return copico_xbios_bin[abus & 0x1FFFu];
 }
@@ -568,6 +569,23 @@ byte keyboard_response(char c) {
 
 ////////////////////////////////////////////////////////
 
+#ifdef COPICO_XBIOS_ROM
+// Cooperative flash-safe parking (file scope — accessed by both class statics).
+// core0 sets g_flash_park_req; core1 sees it between bus cycles, acks into
+// RAM, and spins until core0 clears the request.
+volatile bool g_flash_park_req = false;
+volatile bool g_flash_park_ack = false;
+
+static void __not_in_flash_func(copico_flash_park_point)() {
+  if (!g_flash_park_req) return;
+  g_flash_park_ack = true;
+  while (g_flash_park_req) {
+    tight_loop_contents();
+  }
+  g_flash_park_ack = false;
+}
+#endif
+
 template <class T>
 class LegacyEngine {
  public:
@@ -630,11 +648,58 @@ class LegacyEngine {
     SET_LED(0);
   }
 
+  static void __not_in_flash_func(copico_pulse_coco_reset)() {
+#if G_RESET
+    gpio_set_dir(G_RESET, GPIO_OUT);
+    gpio_put(G_RESET, 0);
+    busy_wait_us(50000);
+    gpio_put(G_RESET, 1);
+    gpio_set_dir(G_RESET, GPIO_IN);
+    gpio_set_pulls(G_RESET, /*up=*/true, /*down=*/false);
+#endif
+  }
+
+  static void copico_service_flash_safe() {
+    if (!copico_config_flash_pending()) {
+      return;
+    }
+
+    const bool reboot_after_save = copico_config_take_reboot_request();
+
+    // Ask core1 to park itself in RAM between bus cycles, then write flash.
+    // This avoids resetting core1 (which would drop bus service) and avoids
+    // the XIP conflict that occurs when core1 is still executing from flash.
+    HaltOn();
+    g_flash_park_req = true;
+    while (!g_flash_park_ack) tight_loop_contents();  // wait for core1 in RAM
+    copico_config_perform_flash_commit();              // write flash from core0
+    if (reboot_after_save) {
+      // RP2350-side equivalent of REG_BOOT ($55): stop serving X-BIOS cart ROM
+      // before pulsing hardware RESET. The 6809 must not write $FF7F while the
+      // cart is still executing X-BIOS (relay click / crash).
+      copico_config_exit_boot_menu();
+    }
+    g_flash_park_req = false;                         // release core1
+    while (g_flash_park_ack) tight_loop_contents();   // wait for core1 resumed
+    if (reboot_after_save) {
+      copico_pulse_coco_reset();
+    }
+    HaltOff();
+  }
+
   static void background() {
     while (1) {
+#ifdef COPICO_XBIOS_ROM
+      copico_service_flash_safe();
+#endif
       bg_busy = false;
-      uint x = POP();
+      uint x = 0;
+      if (!ccfifo.pop(x)) {
+        tight_loop_contents();
+        continue;
+      }
       bg_busy = true;
+
       HaltOn();
 
       switch (x >> 24) {
@@ -765,13 +830,27 @@ class LegacyEngine {
     }                                             \
   }
 
-#define SAY(C) PUSH((C) & 255)
+#ifdef COPICO_XBIOS_ROM
+static inline void copico_maybe_write_reg(uint abus, byte dbus) {
+  if (abus >= 0xFF70 && abus <= 0xFF7F) {
+    copico_reg_write(abus, dbus);
+  }
+}
+
+static inline bool copico_is_reg_read(uint abus) {
+  return abus >= 0xFF70 && abus <= 0xFF7E;
+}
+#endif
 
   static void foreground() {
     // Disable interrupts in this "fast" core.
     save_and_disable_interrupts();
 
     while (true) {
+#ifdef COPICO_XBIOS_ROM
+      // Check between bus cycles; parks in RAM when core0 needs to write flash.
+      copico_flash_park_point();
+#endif
       STALL_WHILE(G_E, CENTIPEDE_INVERT_EQ, 'v');
 
       const uint signals = volatile_sio_hw->gpio_in;
@@ -789,12 +868,20 @@ class LegacyEngine {
 
         if (LIKELY(reading)) {
           if (abus >= 0xFF00) {
-            IOReader r = Readers[abus & 0x00FF];
-            if (r) {
-              dbus = r(abus);
+#ifdef COPICO_XBIOS_ROM
+            if (copico_is_reg_read(abus)) {
+              dbus = copico_reg_read(abus);
               gpio_set_dir_out_masked(0xFF);
               gpio_put_masked(0xFF, dbus);
-            } else {
+            } else
+#endif
+            {
+              IOReader r = Readers[abus & 0x00FF];
+              if (r) {
+                dbus = r(abus);
+                gpio_set_dir_out_masked(0xFF);
+                gpio_put_masked(0xFF, dbus);
+              }
             }
           } else if (T::HasBigRam()) {
             dbus = T::Peek(abus);
@@ -837,12 +924,18 @@ class LegacyEngine {
             T::Poke(abus, dbus);
           } else if (T::UseCoco64kRam(abus)) {
             T::Poke(abus, dbus);
+#ifdef COPICO_XBIOS_ROM
+            copico_config_on_menu_poke(abus, dbus, ram);
+#endif
           } else {
             ram[abus] = dbus;
           }
 
           IOWriter w = 0;
           if (abus >= 0xFF00) {
+#ifdef COPICO_XBIOS_ROM
+            copico_maybe_write_reg(abus, dbus);
+#endif
             w = Writers[abus & 0x00FF];
             if (w) w(abus, dbus);
           }
@@ -858,12 +951,28 @@ class LegacyEngine {
       } else {                  // Is Special Select
         if (LIKELY(reading)) {  // Special CPU READING -- we TX
           dbus;
+          bool drive_bus = true;
 
           if (LIKELY((signals & NEG_CTS) == 0)) {  // READ CTS
+#ifdef COPICO_XBIOS_ROM
+            if (copico_boot_menu_active()) {
+              dbus = cart_rom_byte(abus);
+            } else {
+              drive_bus = false;
+            }
+#else
             dbus = cart_rom_byte(abus);
+#endif
 
           } else {  // READ SCS
-            dbus = ram[abus];
+#ifdef COPICO_XBIOS_ROM
+            if (copico_is_reg_read(abus)) {
+              dbus = copico_reg_read(abus);
+            } else
+#endif
+            {
+              dbus = ram[abus];
+            }
             switch (abus & 15) {
               case 0x8:  // ReadStatus
                 dbus = floppy_status;
@@ -881,21 +990,27 @@ class LegacyEngine {
             }
           }
 
-          gpio_set_dir_out_masked(0xFF);
-          gpio_put_masked(0xFF, dbus);
-          STALL_WHILE(G_E, not CENTIPEDE_INVERT_EQ, 's');
+          if (drive_bus) {
+            gpio_set_dir_out_masked(0xFF);
+            gpio_put_masked(0xFF, dbus);
+            STALL_WHILE(G_E, not CENTIPEDE_INVERT_EQ, 's');
 #if DBUS_HOLD_CYCLES
-          busy_wait_at_least_cycles(DBUS_HOLD_CYCLES);
+            busy_wait_at_least_cycles(DBUS_HOLD_CYCLES);
 #endif
-          gpio_set_dir_in_masked(0xFF);
+            gpio_set_dir_in_masked(0xFF);
+          }
         } else {  // Special CPU WRITING -- we RX
           // SAY('W');
           STALL_WHILE(G_Q, not CENTIPEDE_INVERT_EQ, 'p');
           dbus = (byte)sio_hw->gpio_in;  // grab dbus after q drops
           ram[abus] = dbus;
 
+#ifdef COPICO_XBIOS_ROM
+          copico_maybe_write_reg(abus, dbus);
+#endif
+
           if (LIKELY((signals & NEG_SCS) == 0)) {
-            // WRITE SCS
+            // WRITE SCS (floppy registers only — config handled above)
             switch (abus & 15) {
               case 0x0:  // WriteLatch
                 floppy_latch = dbus;
@@ -1058,6 +1173,9 @@ int main() {
 
 #ifdef COPICO_XBIOS_ROM
   // CoPico: serve cart ROM immediately — do not wait for USB or blink delays.
+  // The X-BIOS preloads VAR_* by reading $FF70-$FF74 at START, so we do NOT
+  // seed the shadow ram[] here (it would land on the untranslated SAM page).
+  copico_config_init();
   Engine0::Run();
 #endif
 
