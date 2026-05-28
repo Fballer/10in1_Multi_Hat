@@ -1,0 +1,17 @@
+# Build outputs
+.pio/
+**/.pio/
+firmware/rp2350/build/
+*.o
+*.elf
+*.bin
+*.uf2
+*.hex
+*.map
+*.dis
+
+# Logs and OS
+*.log
+.DS_Store
+Thumbs.db
+.vscode/

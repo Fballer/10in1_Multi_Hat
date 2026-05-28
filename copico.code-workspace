@@ -1,0 +1,13 @@
+{
+  "folders": [
+    { "path": ".", "name": "10in1_Multi_Hat" },
+    { "path": "../lwtools-4.21", "name": "lwtools" },
+    { "path": "../copico-12in1-master-hat", "name": "legacy (reference)" }
+  ],
+  "settings": {
+    "search.exclude": {
+      "**/firmware/rp2350/build": true,
+      "**/.pio": true
+    }
+  }
+}
