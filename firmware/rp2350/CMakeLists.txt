@@ -29,13 +29,21 @@ pico_set_binary_type(${PROJECT} copy_to_ram)
 
 # CoPico shipping target: X-BIOS on the Bonobo bus engine
 set(COPICO_XBIOS_DIR ${CMAKE_CURRENT_LIST_DIR}/../bios)
+set(COPICO_SHARED_DIR ${CMAKE_CURRENT_LIST_DIR}/../../lib/shared)
 add_executable(copico-watcher watcher-march.cpp)
-target_sources(copico-watcher PRIVATE watcher-march.cpp cross-core.h copico_hat_config.cpp)
+target_sources(copico-watcher PRIVATE
+    watcher-march.cpp
+    cross-core.h
+    copico_hat_config.cpp
+    copico_esp32_bridge.cpp
+    copico_flash_rom.cpp
+)
 target_compile_definitions(copico-watcher PRIVATE COPICO_XBIOS_ROM=1)
-target_include_directories(copico-watcher PRIVATE ${COPICO_XBIOS_DIR})
+target_include_directories(copico-watcher PRIVATE ${COPICO_XBIOS_DIR} ${COPICO_SHARED_DIR})
 target_link_libraries(copico-watcher PRIVATE
     hardware_pio
     hardware_flash
+    hardware_spi
     pico_stdlib
     pico_multicore
     cmsis_core

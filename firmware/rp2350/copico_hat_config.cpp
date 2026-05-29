@@ -1,5 +1,6 @@
 #include "copico_hat_config.h"
 
+#include "copico_flash_rom.h"
 #include "hardware/flash.h"
 #include "hardware/sync.h"
 #include "pico/stdlib.h"
@@ -44,10 +45,19 @@ void apply_constraints(HatConfig& cfg) {
   if (cfg.video == XBIOS_VIDEO_WORDPAK && cfg.audio == XBIOS_AUDIO_ORCH90) {
     cfg.audio = XBIOS_AUDIO_OFF;
   }
-  if (cfg.disk == XBIOS_DISK_FUJINET) {
-    cfg.comm = XBIOS_COMM_FUJINET;
-  } else if (cfg.comm == XBIOS_COMM_FUJINET) {
-    cfg.disk = XBIOS_DISK_FUJINET;
+  // FujiNet and WiModem share network resources — disk FujiNet cannot use comm WiModem.
+  if (cfg.disk == XBIOS_DISK_FUJINET && cfg.comm == XBIOS_COMM_WIMODEM) {
+    cfg.comm = XBIOS_COMM_OFF;
+  }
+}
+
+void migrate_comm_encoding(HatConfig& cfg) {
+  if (cfg.comm == 3) {
+    // Old OFF slot (3) -> new OFF (2).
+    cfg.comm = XBIOS_COMM_OFF;
+  } else if (cfg.comm == 2 && cfg.disk == XBIOS_DISK_FUJINET) {
+    // Old COMM=FujiNet (2) with coupled disk — comm is now OFF (also 2).
+    cfg.comm = XBIOS_COMM_OFF;
   }
 }
 
@@ -85,6 +95,7 @@ void load_from_flash() {
   }
 
   apply_constraints(loaded);
+  migrate_comm_encoding(loaded);
   g_active = loaded;
   g_pending = loaded;
 }
@@ -179,6 +190,9 @@ bool copico_reg_write(uint16_t addr, uint8_t data) {
       }
       g_pending.tz = data;
       return false;
+    case 0xFF76:
+      copico_flash_queue_command(data);
+      return false;
     case 0xFF7F:
       if (data == COPICO_BOOT_MENU) {
         g_boot_menu_active = true;
@@ -233,6 +247,11 @@ bool copico_config_on_menu_poke(uint16_t addr, uint8_t data, uint8_t* coco_ram) 
 void copico_config_save() {
   queue_flash_save();
   copico_config_perform_flash_commit();
+}
+
+void copico_config_set_pending_disk(uint8_t disk) {
+  g_pending.disk = disk;
+  apply_constraints(g_pending);
 }
 
 const HatConfig& copico_config_current() { return g_active; }

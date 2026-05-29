@@ -1,8 +1,10 @@
 # CoPico 10-in-1 Multi Hat
 
+> **Superseded:** Hardware rev 2.12 had incorrect J3/J4 pin assumptions. Active development moved to **[8in1_Multi_HAT](https://github.com/Fballer/8in1_Multi_HAT)** (FIXED J3 header, no VGA). This repo is frozen for reference.
+
 Firmware for the **PortaCoco 10-in-1 Centipede 32z hat** — RP2350 CoCo bus emulation, CoPico X-BIOS, and ESP32-C3 wireless coprocessor.
 
-This repo is the **production line** after hardware bring-up. The earlier Arduino PlatformIO RP2350 experiments live in the legacy repo for reference only.
+This repo was the **production line** after initial hardware bring-up. The earlier Arduino PlatformIO RP2350 experiments live in the legacy repo for reference only.
 
 ## Legacy reference
 

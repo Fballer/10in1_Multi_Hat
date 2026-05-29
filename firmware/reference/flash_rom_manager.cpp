@@ -200,12 +200,29 @@ bool FlashRomManager::install_cocosdc_from_sd() {
     static uint8_t rom_buf[FLASH_ROM_SLOT_SIZE - 256];
     size_t rom_size = 0;
 
-    if (!esp32.rom_fetch_file("/COCOSDC.ROM", rom_buf, sizeof(rom_buf), &rom_size)) {
-        if (!esp32.rom_fetch_file("/ROMS/COCOSDC.ROM", rom_buf, sizeof(rom_buf), &rom_size)) {
-            Serial.println("[Flash] COCOSDC.ROM not found on SD (root or /ROMS/)");
-            status_flags |= FLASH_STATUS_SDC_MISSING;
-            return false;
-        }
+    static const char* k_rom_paths[] = {
+        "/SDC-DOS.ROM",
+        "/ROMS/SDC-DOS.ROM",
+        nullptr,
+    };
+    static const char* k_setup_paths[] = {
+        "/SETUP.DSK",
+        "/ROMS/SETUP.DSK",
+        nullptr,
+    };
+
+    bool loaded = false;
+    for (const char** path = k_rom_paths; *path && !loaded; ++path) {
+        loaded = esp32.rom_fetch_file(*path, rom_buf, sizeof(rom_buf), &rom_size);
+    }
+    for (const char** path = k_setup_paths; *path && !loaded; ++path) {
+        loaded = esp32.rom_fetch_file(*path, rom_buf, sizeof(rom_buf), &rom_size);
+    }
+
+    if (!loaded) {
+        Serial.println("[Flash] SDC-DOS.ROM / SETUP.DSK not found on SD (root or /ROMS/)");
+        status_flags |= FLASH_STATUS_SDC_MISSING;
+        return false;
     }
 
     if (!install_rom(SLOT_COCOSDC, rom_buf, rom_size, 0xC000, "SDC-DOS", 1)) {

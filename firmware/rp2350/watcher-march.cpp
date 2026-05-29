@@ -123,7 +123,12 @@ FORCE_INLINE uint ccfifo_pop_blocking() {
 #ifdef COPICO_XBIOS_ROM
 #include "xbios_rom.h"
 #include "copico_hat_config.h"
+#include "copico_flash_rom.h"
 static inline byte cart_rom_byte(uint abus) {
+  uint8_t flash_byte = 0;
+  if (copico_flash_cart_read(static_cast<uint16_t>(abus), &flash_byte)) {
+    return flash_byte;
+  }
   return copico_xbios_bin[abus & 0x1FFFu];
 }
 #else
@@ -584,6 +589,18 @@ static void __not_in_flash_func(copico_flash_park_point)() {
   }
   g_flash_park_ack = false;
 }
+
+void __not_in_flash_func(copico_bus_park_begin)() {
+  HaltOn();
+  g_flash_park_req = true;
+  while (!g_flash_park_ack) tight_loop_contents();
+}
+
+void __not_in_flash_func(copico_bus_park_end)() {
+  g_flash_park_req = false;
+  while (g_flash_park_ack) tight_loop_contents();
+  HaltOff();
+}
 #endif
 
 template <class T>
@@ -691,6 +708,7 @@ class LegacyEngine {
     while (1) {
 #ifdef COPICO_XBIOS_ROM
       copico_service_flash_safe();
+      copico_flash_service_command();
 #endif
       bg_busy = false;
       uint x = 0;
@@ -1176,6 +1194,7 @@ int main() {
   // The X-BIOS preloads VAR_* by reading $FF70-$FF74 at START, so we do NOT
   // seed the shadow ram[] here (it would land on the untranslated SAM page).
   copico_config_init();
+  copico_flash_rom_init();
   Engine0::Run();
 #endif
 

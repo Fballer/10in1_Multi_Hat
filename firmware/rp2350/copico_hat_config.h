@@ -18,8 +18,7 @@
 
 #define XBIOS_COMM_WIMODEM 0
 #define XBIOS_COMM_RS232 1
-#define XBIOS_COMM_FUJINET 2
-#define XBIOS_COMM_OFF 3
+#define XBIOS_COMM_OFF 2
 
 #define XBIOS_RTC_OFF 0
 #define XBIOS_RTC_ON 1
@@ -59,4 +58,5 @@ uint8_t copico_reg_read(uint16_t addr);
 bool copico_reg_write(uint16_t addr, uint8_t data);
 
 void copico_config_save();
+void copico_config_set_pending_disk(uint8_t disk);
 const HatConfig& copico_config_current();

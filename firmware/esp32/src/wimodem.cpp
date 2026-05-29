@@ -61,6 +61,9 @@ void process_at_command(String cmd) {
             String ssid = args.substring(0, comma_idx);
             String pass = args.substring(comma_idx + 1);
             WiFi.begin(ssid.c_str(), pass.c_str());
+#if defined(ARDUINO_NOLOGO_ESP32C3_SUPER_MINI)
+            WiFi.setTxPower(WIFI_POWER_8_5dBm);
+#endif
             modem_print("\r\nOK\r\n");
         } else {
             modem_print("\r\nERROR\r\n");

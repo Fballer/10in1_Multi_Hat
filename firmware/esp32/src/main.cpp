@@ -3,6 +3,7 @@
 #include <driver/gpio.h>
 #include "spi_protocol.h"
 #include "wimodem.h"
+#include "sdc_setup_extract.h"
 #include "SdFat.h"
 #include "sdios.h"
 #if HAS_SDIO_CLASS
@@ -42,6 +43,78 @@ volatile uint16_t modem_rx_tail = 0;
 uint8_t modem_tx_fifo[ESP_FIFO_SIZE]; // Data going TO RP2350
 volatile uint16_t modem_tx_head = 0;
 volatile uint16_t modem_tx_tail = 0;
+
+static uint8_t rom_fetch_buf[SDC_DOS_ROM_SIZE];
+static uint16_t rom_fetch_size = 0;
+
+static bool path_ends_with_ci(const char* path, const char* suffix) {
+    if (!path || !suffix) return false;
+    size_t path_len = strlen(path);
+    size_t suffix_len = strlen(suffix);
+    if (suffix_len > path_len) return false;
+    const char* tail = path + path_len - suffix_len;
+    for (size_t i = 0; i < suffix_len; ++i) {
+        char a = tail[i];
+        char b = suffix[i];
+        if (a >= 'a' && a <= 'z') a = (char)(a - 'a' + 'A');
+        if (b >= 'a' && b <= 'z') b = (char)(b - 'a' + 'A');
+        if (a != b) return false;
+    }
+    return true;
+}
+
+static bool path_is_setup_dsk(const char* path) {
+    return path_ends_with_ci(path, ".DSK") || path_ends_with_ci(path, ".dsk");
+}
+
+static bool load_rom_from_sd(const char* path) {
+    rom_fetch_size = 0;
+    if (!path || !sd.exists(path)) {
+        return false;
+    }
+
+    FsFile rom_file = sd.open(path, O_RDONLY);
+    if (!rom_file) {
+        return false;
+    }
+
+    size_t file_size = rom_file.size();
+    if (path_is_setup_dsk(path)) {
+        size_t extracted = 0;
+        if (sdc_dos_extract_from_setup_file(rom_file, rom_fetch_buf,
+                                            sizeof(rom_fetch_buf), &extracted)) {
+            rom_fetch_size = (uint16_t)extracted;
+            rom_file.close();
+            Serial.printf("ESP32: Extracted SDC-DOS from '%s' (%u bytes)\n", path,
+                          rom_fetch_size);
+            return true;
+        }
+        rom_file.close();
+        Serial.printf("ESP32: SETUP.DSK found but SDC-DOS extract failed: '%s'\n", path);
+        return false;
+    }
+
+    if (file_size == 0 || file_size > sizeof(rom_fetch_buf)) {
+        rom_file.close();
+        return false;
+    }
+
+    int bytes_read = rom_file.read(rom_fetch_buf, file_size);
+    rom_file.close();
+    if (bytes_read <= 0) {
+        return false;
+    }
+
+    if (!sdc_dos_rom_is_valid(rom_fetch_buf, (size_t)bytes_read)) {
+        Serial.printf("ESP32: '%s' is not a valid SDC-DOS ROM (%d bytes)\n", path,
+                      bytes_read);
+        return false;
+    }
+
+    rom_fetch_size = (uint16_t)bytes_read;
+    Serial.printf("ESP32: Loaded SDC-DOS ROM '%s' (%u bytes)\n", path, rom_fetch_size);
+    return true;
+}
 
 void spi_slave_init() {
     // Configuration for the SPI bus
@@ -165,12 +238,40 @@ void process_spi_transaction() {
                     tx_packet.payload[0] = 0x00; // Success
                     tx_packet.length = 1;
                 }
+                else if (rx_packet.command == CMD_ROM_FETCH) {
+                    char filename[250];
+                    memcpy(filename, rx_packet.payload, rx_packet.length);
+                    filename[rx_packet.length < 249 ? rx_packet.length : 249] = '\0';
+
+                    const bool ok = load_rom_from_sd(filename);
+                    tx_packet.status = STATUS_ROM_ACK;
+                    tx_packet.payload[0] = ok ? 0x00 : 0x80;
+                    tx_packet.payload[1] = rom_fetch_size & 0xFF;
+                    tx_packet.payload[2] = (rom_fetch_size >> 8) & 0xFF;
+                    tx_packet.payload[3] = 252;
+                    tx_packet.length = 4;
+                }
+                else if (rx_packet.command == CMD_ROM_READ_CHUNK) {
+                    uint16_t offset = (uint16_t)rx_packet.payload[0] |
+                                      ((uint16_t)rx_packet.payload[1] << 8);
+                    uint8_t chunk_len = 0;
+                    if (offset < rom_fetch_size) {
+                        chunk_len = rom_fetch_size - offset;
+                        if (chunk_len > 252) chunk_len = 252;
+                        tx_packet.payload[0] = chunk_len;
+                        memcpy(&tx_packet.payload[1], rom_fetch_buf + offset, chunk_len);
+                    } else {
+                        tx_packet.payload[0] = 0;
+                    }
+                    tx_packet.status = STATUS_ROM_CHUNK;
+                    tx_packet.length = 1 + chunk_len;
+                }
             }
         }
 
         // --- PREPARE THE NEXT TX PACKET ---
         // If we didn't just fulfill an SDC read/write, default to polling WiModem data
-        if (rx_packet.command != CMD_SDC_READ && rx_packet.command != CMD_SDC_WRITE && rx_packet.command != CMD_SDC_MOUNT && rx_packet.command != CMD_SDC_SWAP) {
+        if (rx_packet.command != CMD_SDC_READ && rx_packet.command != CMD_SDC_WRITE && rx_packet.command != CMD_SDC_MOUNT && rx_packet.command != CMD_SDC_SWAP && rx_packet.command != CMD_ROM_FETCH && rx_packet.command != CMD_ROM_READ_CHUNK) {
             memset(&tx_packet, 0, sizeof(tx_packet));
             tx_packet.sync = SPI_SYNC_BYTE;
             tx_packet.status = STATUS_IDLE;
@@ -212,7 +313,9 @@ extern void wimodem_setup();
 extern void wimodem_loop();
 
 void setup() {
-    Serial.begin(115200); // Debug serial via USB/UART0
+    Serial.begin(115200);
+    // Super Mini: native USB CDC needs a moment to enumerate after reset.
+    delay(500);
     Serial.println("ESP32-C3 Coprocessor Starting...");
     
     spi_slave_init();

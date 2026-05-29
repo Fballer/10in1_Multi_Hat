@@ -143,22 +143,28 @@ DO_DISK:    LDA     VAR_DISK
             BNE     DD_SAVE
             CLRA
 DD_SAVE:    STA     VAR_DISK
-            CMPA    #1          * FujiNet selected?
+            CMPA    #1          * FujiNet?
             BNE     DD_DONE
-            LDA     #2          * Force Comm to FujiNet
+            LDA     VAR_COMM
+            CMPA    #0          * WiModem not allowed with FujiNet
+            BNE     DD_DONE
+            LDA     #2          * Force COMM OFF
             STA     VAR_COMM
 DD_DONE:    LBRA    MAIN_LOOP
 
 DO_COMM:    LDA     VAR_COMM
             INCA
-            CMPA    #4
+            CMPA    #3
             BNE     DC_SAVE
             CLRA
 DC_SAVE:    STA     VAR_COMM
-            CMPA    #2          * FujiNet selected?
+            CMPA    #0          * WiModem?
             BNE     DC_DONE
-            LDA     #1          * Force Disk to FujiNet
-            STA     VAR_DISK
+            LDA     VAR_DISK
+            CMPA    #1          * FujiNet disk?
+            BNE     DC_DONE
+            LDA     #1          * Skip to RS232
+            STA     VAR_COMM
 DC_DONE:    LBRA    MAIN_LOOP
 DO_RTC:     LDA     VAR_RTC
             EORA    #$01
@@ -601,11 +607,7 @@ DRA_1:      CMPA    #1
             BNE     DRA_2
             LDX     #STR_VAL_RS232
             BRA     DRA_P
-DRA_2:      CMPA    #2
-            BNE     DRA_3
-            LDX     #STR_VAL_FUJINET
-            BRA     DRA_P
-DRA_3:      LDX     #STR_VAL_OFF
+DRA_2:      LDX     #STR_VAL_OFF
 DRA_P:      LBSR    PSTR_N
 
             * Row 11: [D] Disk
@@ -1303,11 +1305,7 @@ PVC_1:      CMPA    #1
             BNE     PVC_2
             LDX     #STR_VAL_RS232
             RTS
-PVC_2:      CMPA    #2
-            BNE     PVC_3
-            LDX     #STR_VAL_FUJINET
-            RTS
-PVC_3:      LDX     #STR_VAL_OFF
+PVC_2:      LDX     #STR_VAL_OFF
             RTS
 
 PVAL_DISK:
@@ -1490,11 +1488,7 @@ DS_C1:      CMPA    #1
             BNE     DS_C2
             LDX     #STR_STAT_RS
             BRA     DS_CP
-DS_C2:      CMPA    #2
-            BNE     DS_C3
-            LDX     #STR_STAT_FUJC
-            BRA     DS_CP
-DS_C3:      LDX     #STR_STAT_OFF
+DS_C2:      LDX     #STR_STAT_OFF
 DS_CP:      LBSR    PSTR_N
             RTS
 
@@ -1851,9 +1845,9 @@ STR_SETUP_H FCC     "-------- ACTION NEEDED --------"
             FCB     0
 STR_SETUP_1 FCC     "  SDC-DOS ROM IS NOT INSTALLED. "
             FCB     0
-STR_SETUP_2 FCC     "  PLEASE PLACE COCOSDC.ROM IN   "
+STR_SETUP_2 FCC     "  PLACE SDC-DOS.ROM OR SETUP.DSK"
             FCB     0
-STR_SETUP_3 FCC     "  ROOT OR /ROMS/ FOLDER ON SD  "
+STR_SETUP_3 FCC     "  ON SD CARD (ROOT OR /ROMS/)   "
             FCB     0
 STR_SETUP_4 FCC     "  CARD AND RESTART TO INSTALL   "
             FCB     0

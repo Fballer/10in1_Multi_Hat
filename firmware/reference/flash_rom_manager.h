@@ -13,7 +13,7 @@
 //
 //   System Slots (pre-loaded from firmware or SD):
 //     Slot 0: CoPico X-BIOS   (Embedded - user's own code)
-//     Slot 1: SDC-DOS         (Auto-install from /ROMS/COCOSDC.ROM)
+//     Slot 1: SDC-DOS         (Auto-install from /ROMS/SDC-DOS.ROM or SETUP.DSK)
 //     Slot 2: FujiNet BIOS    (Embedded - open source)
 //     Slot 3: RS-232 Pak ROM  (Embedded - abandonware)
 //
@@ -80,7 +80,7 @@ public:
     // Clear user-supplied ROMs (SDC-DOS + empty CoCoSDC bank slots).
     void clear_user_slots();
 
-    // Try to load /ROMS/COCOSDC.ROM from SD via ESP32 into Slot 1.
+    // Try to load /SDC-DOS.ROM or official /SETUP.DSK from SD via ESP32 into Slot 1.
     bool install_cocosdc_from_sd();
 
     // Install a ROM into a slot from a data buffer.
